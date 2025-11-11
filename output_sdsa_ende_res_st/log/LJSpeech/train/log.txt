@@ -1,0 +1,4 @@
+Step 10/300000, Total Loss: 18.1451, Mel Loss: 5.0821, Mel PostNet Loss: 5.0850, Pitch Loss: 2.0897, Energy Loss: 1.2235, Duration Loss: 4.6648
+Step 10/30, Total Loss: 1503.0705, Mel Loss: 4.4553, Mel PostNet Loss: 4.5260, Pitch Loss: 547.0610, Energy Loss: 473.4471, Duration Loss: 473.5810
+Step 1/30, Total Loss: 17.2426, Mel Loss: 4.7170, Mel PostNet Loss: 4.7219, Pitch Loss: 0.6848, Energy Loss: 2.6027, Duration Loss: 4.5162
+Step 1/30, Total Loss: 17.2426, Mel Loss: 4.7170, Mel PostNet Loss: 4.7219, Pitch Loss: 0.6848, Energy Loss: 2.6027, Duration Loss: 4.5162

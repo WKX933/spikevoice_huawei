@@ -8,10 +8,11 @@ import torch.nn.functional as F
 from transformer_sdsa_ende_res_st_draw import Encoder, Decoder, PostNet
 from .modules_attn_res_1 import VarianceAdaptor
 from utils.tools import get_mask_from_lengths
-from spikingjelly.clock_driven.neuron import (
-    MultiStepLIFNode,
-    MultiStepParametricLIFNode,
-)
+# from spikingjelly.clock_driven.neuron import (
+#     MultiStepLIFNode,
+#     MultiStepParametricLIFNode,
+# )
+
 
 
 class FastSpeech2_sdsa_ende_res_st(nn.Module):

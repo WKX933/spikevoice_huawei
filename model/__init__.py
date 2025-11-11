@@ -1,4 +1,3 @@
-from .fastspeech2 import FastSpeech2
-from .fastspeech2_sdsa_ende_res_st import FastSpeech2_sdsa_ende_res_st
-from .loss import FastSpeech2Loss
-from .optimizer import ScheduledOptim
+from .fastspeech2_sdsa_ende_res_st_huawei import FastSpeech2_sdsa_ende_res_st
+from .loss_huawei import FastSpeech2Loss
+from .optimizer_huawei import ScheduledOptim

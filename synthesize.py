@@ -2,22 +2,22 @@ import re
 import argparse
 from string import punctuation
 
-import torch
+import mindspore
 import yaml
 import numpy as np
-from torch.utils.data import DataLoader
-from g2p_en import G2p
-from pypinyin import pinyin, Style
+import mindspore.dataset as ds
+from mindspore import context, Tensor
 import os
 # os.chdir('/opt/tiger/transformer-tts/FastSpeech2')
 from utils.model import get_model, get_vocoder
-from utils.tools import to_device, synth_samples
+from utils.tools import synth_samples
 from dataset import TextDataset
 from text import text_to_sequence
+# SpikingJelly相关导入可能需要调整
 from spikingjelly.clock_driven import functional
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+# 设置MindSpore运行环境
+context.set_context(mode=context.PYNATIVE_MODE, device_target="GPU")  # 根据实际情况选择GPU或CPU
 
 def read_lexicon(lex_path):
     lexicon = {}
@@ -90,25 +90,67 @@ def synthesize(model, step, configs, vocoder, batchs, control_values):
     preprocess_config, model_config, train_config = configs
     pitch_control, energy_control, duration_control = control_values
 
+    # 设置模型为评估模式
+    model.set_train(False)
+    
     for batch in batchs:
-        functional.reset_net(model)
-        batch = to_device(batch, device)
-        with torch.no_grad():
-            # Forward
+        # SpikingJelly重置，可能需要调整
+        # functional.reset_net(model)
+        
+        # 使用MindSpore的StopGradient来禁用梯度计算
+        mindspore.ops.StopGradient(True)
+        
+        # Forward
+        # 根据batch的数据结构进行调整
+        if isinstance(batch, dict):
+            # 如果是字典格式的数据
+            texts = Tensor(batch["texts"], mindspore.float32)
+            text_lens = Tensor(batch["text_lens"], mindspore.int32)
+            speakers = Tensor(batch["speakers"], mindspore.int32)
+            max_text_len = batch["max_text_len"]
+            
+            # 调用模型，注意参数顺序和名称可能需要调整
             output = model(
-                *(batch[2:]),
+                texts, text_lens, speakers, max_text_len,
                 p_control=pitch_control,
                 e_control=energy_control,
                 d_control=duration_control
             )
-            synth_samples(
-                batch,
-                output,
-                vocoder,
-                model_config,
-                preprocess_config,
-                train_config["path"]["result_path"],
+        else:
+            # 如果是tuple格式的数据
+            ids, raw_texts, speakers, texts, text_lens, max_text_len = batch
+            
+            # 转换为MindSpore Tensor
+            speakers = Tensor(speakers, mindspore.int32)
+            texts = Tensor(texts, mindspore.float32)
+            text_lens = Tensor(text_lens, mindspore.int32)
+            
+            output = model(
+                texts, text_lens, speakers, max_text_len,
+                p_control=pitch_control,
+                e_control=energy_control,
+                d_control=duration_control
             )
+        
+        # 准备batch数据用于合成样本
+        synth_batch = {
+            "ids": ids if 'ids' in locals() else batch["ids"],
+            "raw_texts": raw_texts if 'raw_texts' in locals() else batch["raw_texts"],
+            "speakers": speakers,
+            "texts": texts,
+            "text_lens": text_lens
+        }
+        
+        synth_samples(
+            synth_batch,
+            output,
+            vocoder,
+            model_config,
+            preprocess_config,
+            train_config["path"]["result_path"],
+        )
+        
+        mindspore.ops.StopGradient(False)
 
 
 if __name__ == "__main__":
@@ -187,21 +229,35 @@ if __name__ == "__main__":
     train_config = yaml.load(open(args.train_config, "r"), Loader=yaml.FullLoader)
     configs = (preprocess_config, model_config, train_config)
 
-    # Get model
-    model = get_model(args, configs, device, train=False,mode='sdsa_ende_res_st')
+    # Get model - 移除device参数
+    model = get_model(args, configs, train=False, mode='sdsa_ende_res_st')
 
-    # Load vocoder
-    vocoder = get_vocoder(model_config, device)
+    # Load vocoder - 移除device参数
+    vocoder = get_vocoder(model_config)
 
     # Preprocess texts
     if args.mode == "batch":
         # Get dataset
         dataset = TextDataset(args.source, preprocess_config)
-        batchs = DataLoader(
+        # 使用MindSpore的GeneratorDataset
+        batchs = ds.GeneratorDataset(
             dataset,
-            batch_size=8,
-            collate_fn=dataset.collate_fn,
+            column_names=dataset.get_column_names(),
+            shuffle=False,
+            num_parallel_workers=4
         )
+        batchs = batchs.batch(batch_size=8, drop_remainder=False)
+        
+        # 添加后处理操作
+        batchs = batchs.map(
+            operations=dataset.postprocess,
+            input_columns=dataset.get_column_names(),
+            output_columns=["ids", "raw_texts", "speakers", "texts", "text_lens", "max_text_len"]
+        )
+        
+        # 转换为可迭代对象
+        batchs = batchs.create_dict_iterator()
+        
     if args.mode == "single":
         ids = raw_texts = [args.text[:100]]
         speakers = np.array([args.speaker_id])
@@ -210,7 +266,14 @@ if __name__ == "__main__":
         elif preprocess_config["preprocessing"]["text"]["language"] == "zh":
             texts = np.array([preprocess_mandarin(args.text, preprocess_config)])
         text_lens = np.array([len(texts[0])])
-        batchs = [(ids, raw_texts, speakers, texts, text_lens, max(text_lens))]
+        batchs = [{
+            "ids": ids,
+            "raw_texts": raw_texts, 
+            "speakers": speakers,
+            "texts": texts,
+            "text_lens": text_lens,
+            "max_text_len": max(text_lens)
+        }]
 
     control_values = args.pitch_control, args.energy_control, args.duration_control
 

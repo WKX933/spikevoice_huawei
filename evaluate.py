@@ -1,19 +1,20 @@
 import argparse
 import os
 
-import torch
+import mindspore
 import yaml
-import torch.nn as nn
-from torch.utils.data import DataLoader
+import mindspore.nn as nn
+import mindspore.dataset as ds
+from mindspore import context, Tensor
+from mindspore.train.summary import SummaryRecord
 
 from utils.model import get_model, get_vocoder
-from utils.tools import to_device, log, synth_one_sample
+from utils.tools import log, synth_one_sample
 from model import FastSpeech2Loss
 from dataset import Dataset
 
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+# 设置MindSpore运行环境
+context.set_context(mode=context.PYNATIVE_MODE, device_target="Ascend")  # 根据实际情况选择GPU或CPU
 
 def evaluate(model, step, configs, logger=None, vocoder=None):
     preprocess_config, model_config, train_config = configs
@@ -23,40 +24,90 @@ def evaluate(model, step, configs, logger=None, vocoder=None):
         "val.txt", preprocess_config, train_config, sort=False, drop_last=False
     )
     batch_size = train_config["optimizer"]["batch_size"]
-    loader = DataLoader(
+    
+    # 使用MindSpore的GeneratorDataset
+    loader = ds.GeneratorDataset(
         dataset,
-        batch_size=batch_size,
+        column_names=dataset.get_column_names(),
         shuffle=False,
-        collate_fn=dataset.collate_fn,
+        num_parallel_workers=4
+    )
+    loader = loader.batch(batch_size=batch_size, drop_remainder=False)
+    
+    # 添加后处理操作
+    loader = loader.map(
+        operations=dataset.postprocess,
+        input_columns=dataset.get_column_names(),
+        output_columns=["ids", "raw_texts", "speakers", "texts", "text_lens", 
+                       "max_text_len", "mels", "mel_lens", "max_mel_len", 
+                       "pitches", "energies", "durations"]
     )
 
     # Get loss function
-    Loss = FastSpeech2Loss(preprocess_config, model_config).to(device)
+    Loss = FastSpeech2Loss(preprocess_config, model_config)
 
     # Evaluation
     loss_sums = [0 for _ in range(6)]
-    for batchs in loader:
-        for batch in batchs:
-            batch = to_device(batch, device)
-            with torch.no_grad():
-                # Forward
-                output = model(*(batch[2:]))
+    total_samples = 0
+    
+    # 设置模型为评估模式
+    model.set_train(False)
+    
+    for batch in loader.create_dict_iterator():
+        # MindSpore数据已经是Tensor格式，不需要手动转移到设备
+        # 但需要确保数据类型正确
+        texts = Tensor(batch["texts"], mindspore.float32)
+        text_lens = Tensor(batch["text_lens"], mindspore.int32)
+        mels = Tensor(batch["mels"], mindspore.float32)
+        mel_lens = Tensor(batch["mel_lens"], mindspore.int32)
+        max_mel_len = batch["max_mel_len"]
+        pitches = Tensor(batch["pitches"], mindspore.float32)
+        energies = Tensor(batch["energies"], mindspore.float32)
+        durations = Tensor(batch["durations"], mindspore.int32)
+        
+        batch_size_current = len(batch["ids"])
+        total_samples += batch_size_current
+        
+        # 使用MindSpore的no_grad等价方式
+        mindspore.ops.StopGradient(True)
+        # Forward
+        output = model(texts, text_lens, mels, mel_lens, max_mel_len, pitches, energies, durations)
 
-                # Cal Loss
-                losses = Loss(batch, output)
+        # Cal Loss
+        losses = Loss(batch, output)
 
-                for i in range(len(losses)):
-                    loss_sums[i] += losses[i].item() * len(batch[0])
+        for i in range(len(losses)):
+            # MindSpore的loss可能是Tensor，需要转换为numpy数值
+            if hasattr(losses[i], 'asnumpy'):
+                loss_value = losses[i].asnumpy()
+            else:
+                loss_value = losses[i]
+            loss_sums[i] += loss_value * batch_size_current
+        mindspore.ops.StopGradient(False)
 
-    loss_means = [loss_sum / len(dataset) for loss_sum in loss_sums]
+    loss_means = [loss_sum / total_samples for loss_sum in loss_sums]
 
     message = "Validation Step {}, Total Loss: {:.4f}, Mel Loss: {:.4f}, Mel PostNet Loss: {:.4f}, Pitch Loss: {:.4f}, Energy Loss: {:.4f}, Duration Loss: {:.4f}".format(
         *([step] + [l for l in loss_means])
     )
 
     if logger is not None:
+        # 准备用于合成的batch数据
+        synth_batch = {
+            "ids": batch["ids"],
+            "raw_texts": batch["raw_texts"],
+            "speakers": batch["speakers"],
+            "texts": texts,
+            "text_lens": text_lens,
+            "mels": mels,
+            "mel_lens": mel_lens,
+            "pitches": pitches,
+            "energies": energies,
+            "durations": durations
+        }
+        
         fig, wav_reconstruction, wav_prediction, tag = synth_one_sample(
-            batch,
+            synth_batch,
             output,
             vocoder,
             model_config,
@@ -83,6 +134,9 @@ def evaluate(model, step, configs, logger=None, vocoder=None):
             tag="Validation/step_{}_{}_synthesized".format(step, tag),
         )
 
+    # 恢复训练模式（如果需要）
+    model.set_train(True)
+    
     return message
 
 
@@ -113,8 +167,8 @@ if __name__ == "__main__":
     train_config = yaml.load(open(args.train_config, "r"), Loader=yaml.FullLoader)
     configs = (preprocess_config, model_config, train_config)
 
-    # Get model
-    model = get_model(args, configs, device, train=False).to(device)
+    # Get model - 移除device参数
+    model = get_model(args, configs, train=False)
 
     message = evaluate(model, args.restore_step, configs)
     print(message)

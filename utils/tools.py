@@ -2,21 +2,22 @@ from cmath import inf
 import os
 import json
 
-import torch
-import torch.nn.functional as F
+import mindspore
+import mindspore.nn as nn
+import mindspore.ops as ops
 import numpy as np
 import matplotlib
 from scipy.io import wavfile
 from matplotlib import pyplot as plt
+from mindspore import dtype as mstype
 
 
 matplotlib.use("Agg")
 
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# device = "cpu"
-
-def to_device(data, device):
+def to_device(data):
+    """
+    MindSpore自动处理设备，此函数主要进行数据类型转换
+    """
     if len(data) == 12:
         (
             ids,
@@ -33,14 +34,14 @@ def to_device(data, device):
             durations,
         ) = data
 
-        speakers = torch.from_numpy(speakers).long().to(device)
-        texts = torch.from_numpy(texts).long().to(device)
-        src_lens = torch.from_numpy(src_lens).to(device)
-        mels = torch.from_numpy(mels).float().to(device)
-        mel_lens = torch.from_numpy(mel_lens).to(device)
-        pitches = torch.from_numpy(pitches).float().to(device)
-        energies = torch.from_numpy(energies).to(device)
-        durations = torch.from_numpy(durations).long().to(device)
+        speakers = mindspore.Tensor(speakers, dtype=mindspore.int64)
+        texts = mindspore.Tensor(texts, dtype=mindspore.int64)
+        src_lens = mindspore.Tensor(src_lens)
+        mels = mindspore.Tensor(mels, dtype=mindspore.float32)
+        mel_lens = mindspore.Tensor(mel_lens)
+        pitches = mindspore.Tensor(pitches, dtype=mindspore.float32)
+        energies = mindspore.Tensor(energies)
+        durations = mindspore.Tensor(durations, dtype=mindspore.int64)
 
         return (
             ids,
@@ -60,9 +61,9 @@ def to_device(data, device):
     if len(data) == 6:
         (ids, raw_texts, speakers, texts, src_lens, max_src_len) = data
 
-        speakers = torch.from_numpy(speakers).long().to(device)
-        texts = torch.from_numpy(texts).long().to(device)
-        src_lens = torch.from_numpy(src_lens).to(device)
+        speakers = mindspore.Tensor(speakers, dtype=mindspore.int64)
+        texts = mindspore.Tensor(texts, dtype=mindspore.int64)
+        src_lens = mindspore.Tensor(src_lens)
 
         return (ids, raw_texts, speakers, texts, src_lens, max_src_len)
 
@@ -71,33 +72,101 @@ def log(
     logger, step=None, losses=None, fig=None, audio=None, sampling_rate=22050, tag=""
 ):
     if losses is not None:
-        logger.add_scalar("Loss/total_loss", losses[0], step)
-        logger.add_scalar("Loss/mel_loss", losses[1], step)
-        logger.add_scalar("Loss/mel_postnet_loss", losses[2], step)
-        logger.add_scalar("Loss/pitch_loss", losses[3], step)
-        logger.add_scalar("Loss/energy_loss", losses[4], step)
-        logger.add_scalar("Loss/duration_loss", losses[5], step)
+        breakpoint()
+        logger.record("Loss/total_loss", losses[0], int(step))
+        logger.record("Loss/mel_loss", losses[1], int(step))
+        logger.record("Loss/mel_postnet_loss", losses[2], int(step))
+        logger.record("Loss/pitch_loss", losses[3], int(step))
+        logger.record("Loss/energy_loss", losses[4], int(step))
+        logger.record("Loss/duration_loss", losses[5], int(step))
 
     if fig is not None:
-        logger.add_figure(tag, fig)
+        logger.record_figure(tag, fig)
 
     if audio is not None:
-        logger.add_audio(
+        # MindSpore的SummaryRecord可能需要不同的音频记录方式
+        audio_normalized = audio / np.max(np.abs(audio))
+        logger.record_audio(
             tag,
-            audio / max(abs(audio)),
+            audio_normalized,
             sample_rate=sampling_rate,
         )
 
 
 def get_mask_from_lengths(lengths, max_len=None):
     batch_size = lengths.shape[0]
+    # breakpoint()
     if max_len is None:
-        max_len = torch.max(lengths).item()
+        max_len = int(ops.ReduceMax()(lengths).asnumpy())
+    
+    # try:
+    #     max_len = int(ops.ReduceMax()(lengths).asnumpy())
+    # except:
+    #     breakpoint()
 
-    ids = torch.arange(0, max_len).unsqueeze(0).expand(batch_size, -1).to(device)
-    mask = ids >= lengths.unsqueeze(1).expand(-1, max_len)
+    # breakpoint()
+    ids = ops.ExpandDims()(ops.arange(0, max_len), 0)
+    ids = ops.Tile()(ids, (batch_size, 1))
+    mask = ids >= ops.ExpandDims()(lengths, 1)
 
     return mask
+
+# def get_mask_from_lengths(lengths, max_len=None):
+#     batch_size = lengths.shape[0]
+#     # breakpoint()
+#     # if max_len.dtype == mstype.string:
+#     max_len1 = int(ops.ReduceMax()(lengths).asnumpy())
+    
+#     try:
+#         ids = ops.ExpandDims()(ops.arange(0, max_len1), 0)
+#     except:
+#         breakpoint()
+#     ids = ops.Tile()(ids, (batch_size, 1))
+#     mask = ids >= ops.ExpandDims()(lengths, 1)
+#     return mask
+
+
+
+# def get_mask_from_lengths(lengths, max_len=None):
+#     # 确保 lengths 是 Tensor[int]
+#     if not isinstance(lengths, ms.Tensor):
+#         lengths = ms.Tensor(lengths, ms.int32)
+#     elif lengths.dtype != ms.int32:
+#         lengths = lengths.astype(ms.int32)
+
+#     # 自动推导 max_len（忽略传入的字符串）
+#     if (max_len is None) or (isinstance(max_len, ms.Tensor) and max_len.dtype == ms.string):
+#         max_len = ops.max(lengths)
+#     elif isinstance(max_len, ms.Tensor):
+#         max_len = int(max_len.asnumpy().item())
+#     elif isinstance(max_len, (list, tuple)):
+#         max_len = int(max(max_len))
+#     elif isinstance(max_len, str):
+#         # 不能转换的字符串自动忽略
+#         try:
+#             max_len = int(max_len)
+#         except:
+#             max_len = int(ops.max(lengths).asnumpy())
+#     else:
+#         max_len = int(max_len)
+
+#     # 构造 mask
+#     ids = ops.arange(0, max_len, 1, ms.int32)
+#     ids = ops.ExpandDims()(ids, 0)
+#     ids = ops.Tile()(ids, (lengths.shape[0], 1))
+#     mask = ids >= ops.ExpandDims()(lengths, 1)
+#     return mask
+
+# def get_mask_from_lengths(lengths, max_len=None):
+#     lengths = mindspore.Tensor(lengths, mindspore.int32) if not isinstance(lengths, mindspore.Tensor) else lengths
+#     batch_size = lengths.shape[0]
+#     max_len = int(ops.max(lengths).asnumpy()) if max_len is None else int(max_len)
+#     ids = ops.arange(0, mindspore.Tensor(max_len, mindspore.int32), 1, mindspore.int32)
+#     ids = ops.ExpandDims()(ids, 0)
+#     ids = ops.Tile()(ids, (batch_size, 1))
+#     mask = ids >= ops.ExpandDims()(lengths, 1)
+#     return mask
+
 
 
 def expand(values, durations):
@@ -110,21 +179,23 @@ def expand(values, durations):
 def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_config):
 
     basename = targets[0][0]
-    src_len = predictions[8][0].item()
-    mel_len = predictions[9][0].item()
-    mel_target = targets[6][0, :mel_len].detach().transpose(0, 1)
-    mel_prediction = predictions[1][0, :mel_len].detach().transpose(0, 1)
-    duration = targets[11][0, :src_len].detach().cpu().numpy()
+    src_len = int(predictions[8][0].asnumpy())
+    mel_len = int(predictions[9][0].asnumpy())
+    mel_target = ops.Transpose()(targets[6][0, :mel_len], (1, 0))
+    mel_prediction = ops.Transpose()(predictions[1][0, :mel_len], (1, 0))
+    duration = targets[11][0, :src_len].asnumpy()
+    
     if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
-        pitch = targets[9][0, :src_len].detach().cpu().numpy()
+        pitch = targets[9][0, :src_len].asnumpy()
         pitch = expand(pitch, duration)
     else:
-        pitch = targets[9][0, :mel_len].detach().cpu().numpy()
+        pitch = targets[9][0, :mel_len].asnumpy()
+        
     if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
-        energy = targets[10][0, :src_len].detach().cpu().numpy()
+        energy = targets[10][0, :src_len].asnumpy()
         energy = expand(energy, duration)
     else:
-        energy = targets[10][0, :mel_len].detach().cpu().numpy()
+        energy = targets[10][0, :mel_len].asnumpy()
 
     with open(
         os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
@@ -134,8 +205,8 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
 
     fig = plot_mel(
         [
-            (mel_prediction.cpu().numpy(), pitch, energy),
-            (mel_target.cpu().numpy(), pitch, energy),
+            (mel_prediction.asnumpy(), pitch, energy),
+            (mel_target.asnumpy(), pitch, energy),
         ],
         stats,
         ["Synthetized Spectrogram", "Ground-Truth Spectrogram"],
@@ -145,13 +216,13 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
         from .model import vocoder_infer
 
         wav_reconstruction = vocoder_infer(
-            mel_target.unsqueeze(0),
+            ops.ExpandDims()(mel_target, 0),
             vocoder,
             model_config,
             preprocess_config,
         )[0]
         wav_prediction = vocoder_infer(
-            mel_prediction.unsqueeze(0),
+            ops.ExpandDims()(mel_prediction, 0),
             vocoder,
             model_config,
             preprocess_config,
@@ -167,20 +238,22 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
     basenames = targets[0]
     for i in range(len(predictions[0])):
         basename = basenames[i]
-        src_len = predictions[8][i].item()
-        mel_len = predictions[9][i].item()
-        mel_prediction = predictions[1][i, :mel_len].detach().transpose(0, 1)
-        duration = predictions[5][i, :src_len].detach().cpu().numpy()
+        src_len = int(predictions[8][i].asnumpy())
+        mel_len = int(predictions[9][i].asnumpy())
+        mel_prediction = ops.Transpose()(predictions[1][i, :mel_len], (1, 0))
+        duration = predictions[5][i, :src_len].asnumpy()
+        
         if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
-            pitch = predictions[2][i, :src_len].detach().cpu().numpy()
+            pitch = predictions[2][i, :src_len].asnumpy()
             pitch = expand(pitch, duration)
         else:
-            pitch = predictions[2][i, :mel_len].detach().cpu().numpy()
+            pitch = predictions[2][i, :mel_len].asnumpy()
+            
         if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
-            energy = predictions[3][i, :src_len].detach().cpu().numpy()
+            energy = predictions[3][i, :src_len].asnumpy()
             energy = expand(energy, duration)
         else:
-            energy = predictions[3][i, :mel_len].detach().cpu().numpy()
+            energy = predictions[3][i, :mel_len].asnumpy()
 
         with open(
             os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
@@ -190,7 +263,7 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
 
         fig = plot_mel(
             [
-                (mel_prediction.cpu().numpy(), pitch, energy),
+                (mel_prediction.asnumpy(), pitch, energy),
             ],
             stats,
             ["Synthetized Spectrogram"],
@@ -200,7 +273,7 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
 
     from .model import vocoder_infer
 
-    mel_predictions = predictions[1].transpose(1, 2)
+    mel_predictions = ops.Transpose()(predictions[1], (0, 2, 1))
     lengths = predictions[9] * preprocess_config["preprocessing"]["stft"]["hop_length"]
     wav_predictions = vocoder_infer(
         mel_predictions, vocoder, model_config, preprocess_config, lengths=lengths
@@ -233,32 +306,6 @@ def plot_mel(data, stats, titles):
         axes[i][0].set_title(titles[i], fontsize="medium")
         axes[i][0].tick_params(labelsize="x-small", left=False, labelleft=False)
         axes[i][0].set_anchor("W")
-
-        # ax1 = add_axis(fig, axes[i][0])
-        # ax1.plot(pitch, color="tomato")
-        # ax1.set_xlim(0, mel.shape[1])
-        # ax1.set_ylim(0, pitch_max)
-        # ax1.set_ylabel("F0", color="tomato")
-        # ax1.tick_params(
-        #     labelsize="x-small", colors="tomato", bottom=False, labelbottom=False
-        # )
-
-        # ax2 = add_axis(fig, axes[i][0])
-        # ax2.plot(energy, color="darkviolet")
-        # ax2.set_xlim(0, mel.shape[1])
-        # ax2.set_ylim(energy_min, energy_max)
-        # ax2.set_ylabel("Energy", color="darkviolet")
-        # ax2.yaxis.set_label_position("right")
-        # ax2.tick_params(
-        #     labelsize="x-small",
-        #     colors="darkviolet",
-        #     bottom=False,
-        #     labelbottom=False,
-        #     left=False,
-        #     labelleft=False,
-        #     right=True,
-        #     labelright=True,
-        # )
 
     return fig
 
@@ -297,7 +344,7 @@ def pad_2D(inputs, maxlen=None):
     return output
 
 
-def pad_1D_long(inputs,window,PAD=0):
+def pad_1D_long(inputs, window, PAD=0):
     def pad_data(x, length, PAD):
         x_padded = np.pad(
             x, (0, length - x.shape[0]), mode="constant", constant_values=PAD
@@ -305,15 +352,15 @@ def pad_1D_long(inputs,window,PAD=0):
         return x_padded
 
     max_len = max((len(x) for x in inputs))
-    w = int(2*window)
-    len_pad = (int(max_len/w)+int(max_len%w>0))*w
+    w = int(2 * window)
+    len_pad = (int(max_len / w) + int(max_len % w > 0)) * w
     padded = np.stack([pad_data(x, len_pad, PAD) for x in inputs])
 
     return padded
 
 
-def pad_2D_long(inputs, window,maxlen=None):
-    w = window*2
+def pad_2D_long(inputs, window, maxlen=None):
+    w = window * 2
     def pad(x, max_len):
         PAD = 0
         if np.shape(x)[0] > max_len:
@@ -326,11 +373,11 @@ def pad_2D_long(inputs, window,maxlen=None):
         return x_padded[:, :s]
 
     if maxlen:
-        len_pad = (int(max_len/w)+int(max_len%w>0))*w
+        len_pad = (int(maxlen / w) + int(maxlen % w > 0)) * w
         output = np.stack([pad(x, len_pad) for x in inputs])
     else:
         max_len = max(np.shape(x)[0] for x in inputs)
-        len_pad = (int(max_len/w)+int(max_len%w>0))*w
+        len_pad = (int(max_len / w) + int(max_len % w > 0)) * w
         output = np.stack([pad(x, len_pad) for x in inputs])
 
     return output
@@ -340,48 +387,69 @@ def pad(input_ele, mel_max_length=None):
     if mel_max_length:
         max_len = mel_max_length
     else:
-        max_len = max([input_ele[i].size(0) for i in range(len(input_ele))])
+        max_len = max([input_ele[i].shape[0] for i in range(len(input_ele))])
 
     out_list = list()
     for i, batch in enumerate(input_ele):
         if len(batch.shape) == 1:
-            one_batch_padded = F.pad(
-                batch, (0, max_len - batch.size(0)), "constant", 0.0
-            )
+            # 使用MindSpore的pad操作
+            one_batch_padded = ops.Pad(((0, max_len - batch.shape[0])))(batch)
         elif len(batch.shape) == 2:
-            one_batch_padded = F.pad(
-                batch, (0, 0, 0, max_len - batch.size(0)), "constant", 0.0
-            )
+            one_batch_padded = ops.Pad(((0, max_len - batch.shape[0]), (0, 0)))(batch)
         out_list.append(one_batch_padded)
-    out_padded = torch.stack(out_list)
+    
+    out_padded = ops.Stack()(out_list)
     return out_padded
 
-def mask_attn_unidir(attn_weights,mode='local'):
-    if mode=='local':
-        win=attn_weights.shape[-1]
-        l = int((win-1)/2)
-        attn_weights[:,:,0::2,-l:]=-inf
-        attn_weights[:,:,1::2,:l]=-inf
-        # mask = torch.zeros([bsz,length,heads,win],dtype=torch.float32)
-        # mask[:,:,0::2,-l:]=1 #ou数head下三角，mask是上三角
-        # mask[:,:,1::2,:l]=1 #qi数head上三角，mask是下三角
-    if mode=='global_l':
-        bsz,length,heads,num_global=attn_weights.shape
-        # mask = torch.ones([bsz,heads,length,num_global],dtype=torch.float32)
-        # mask[:,0::2,:,:]=torch.triu(mask[:,0::2,:,:])
-        # mask[:,1::2,:,:]=torch.tril(mask[:,1::2,:,:])
-        attn_weights = attn_weights.transpose(1,2)
-        ind_l = torch.tril_indices(length, num_global, -1)
-        ind_u = torch.triu_indices(length, num_global, 1)
-        attn_weights[:,0::2,ind_u[0],ind_u[1]]=-10000
-        attn_weights[:,1::2,ind_l[0],ind_l[1]]=-10000
-        attn_weights = attn_weights.transpose(1,2)
-    if mode=='global_r':
-        bsz,heads,num_global,length=attn_weights.shape
-        # mask = torch.ones([bsz,heads,num_global,length],dtype=torch.float32)
-        ind_l = torch.tril_indices(num_global,length,  -1)
-        ind_u = torch.triu_indices(num_global,length,  1)
-        attn_weights[:,0::2,ind_u[0],ind_u[1]]=-10000
-        attn_weights[:,1::2,ind_l[0],ind_l[1]]=-10000
+
+def mask_attn_unidir(attn_weights, mode='local'):
+    if mode == 'local':
+        win = attn_weights.shape[-1]
+        l = int((win - 1) / 2)
+        # 创建掩码
+        mask = ops.ZerosLike()(attn_weights)
+        # 偶数头掩码后l个位置
+        mask[:, :, 0::2, -l:] = -float('inf')
+        # 奇数头掩码前l个位置
+        mask[:, :, 1::2, :l] = -float('inf')
+        attn_weights = attn_weights + mask
+        
+    elif mode == 'global_l':
+        bsz, length, heads, num_global = attn_weights.shape
+        attn_weights = ops.Transpose()(attn_weights, (0, 2, 1, 3))
+        
+        # 创建上三角和下三角掩码
+        for head_idx in range(heads):
+            if head_idx % 2 == 0:  # 偶数头
+                # 上三角掩码
+                for i in range(length):
+                    for j in range(i + 1, num_global):
+                        if j < num_global:
+                            attn_weights[:, head_idx, i, j] = -10000
+            else:  # 奇数头
+                # 下三角掩码
+                for i in range(length):
+                    for j in range(0, i):
+                        if j < num_global:
+                            attn_weights[:, head_idx, i, j] = -10000
+                            
+        attn_weights = ops.Transpose()(attn_weights, (0, 2, 1, 3))
+        
+    elif mode == 'global_r':
+        bsz, heads, num_global, length = attn_weights.shape
+        # 创建上三角和下三角掩码
+        for head_idx in range(heads):
+            if head_idx % 2 == 0:  # 偶数头
+                # 上三角掩码
+                for i in range(num_global):
+                    for j in range(i + 1, length):
+                        if j < length:
+                            attn_weights[:, head_idx, i, j] = -10000
+            else:  # 奇数头
+                # 下三角掩码
+                for i in range(num_global):
+                    for j in range(0, i):
+                        if j < length:
+                            attn_weights[:, head_idx, i, j] = -10000
 
     return attn_weights
